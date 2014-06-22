@@ -1,12 +1,14 @@
 package com.ghw.rockerproject;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.MulticastSocket;
 import java.net.NetworkInterface;
 import java.net.ServerSocket;
 import java.net.SocketException;
@@ -27,7 +29,9 @@ import android.view.SurfaceHolder.Callback;
 import android.view.SurfaceView;
 
 public class MySurfaceView extends SurfaceView implements Callback, Runnable {
-	public int portnum = 6000;
+	private final String BROADCAST_IP = "224.0.0.1";
+	private String CLIENT_IP = "";
+	public int portnum = 9999;
 	private SurfaceHolder sfh;
 	private float smallCenterX, smallCenterY, smallCenterR = 60;
 	private float BigCenterX, BigCenterY, BigCenterR = 120;
@@ -36,13 +40,14 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	float percent = 1;
 	public static String hostip; // 本机IP
 	public Bitmap background;
+	public double offsetX=0.0,offsetY=0.0,offsetX2=0.0,offsetY2=0.0;
 	private ServerSocket ss;
 	private InputStream ins;
 	private int angle;
 	private boolean btn1_choosed = false, btn2_choosed = false,
 			btn3_choosed = false, btn4_choosed = false;
 	private Thread th;
-
+	
 	private boolean flag;
 	private Canvas canvas;
 	public float screenW, screenH;
@@ -56,7 +61,8 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 			dstbtn2_pressed, dstbtn3, dstbtn3_pressed, dstbtn4,
 			dstbtn4_pressed, dstenlarg, dstshrink, dstvideo, dstpicture;
 	private Paint paint, paint_black, paint_white, paint_line;
-
+	private long timepre=0;
+	private long timeaft=0;
 	public MySurfaceView(Context context) {
 		super(context);
 		sfh = this.getHolder();
@@ -132,7 +138,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 		smallCenterX = screenW / 7;
 		BigCenterY = screenH * 5 / 8;
 		BigCenterX = screenW / 7;
-		smallCenterY2 = screenH * 3 / 5;
+		smallCenterY2 = screenH * 5 / 8;
 		smallCenterX2 = screenW * 6 / 7;
 		BigCenterY2 = screenH * 5 / 8;
 		BigCenterX2 = screenW * 6 / 7;
@@ -293,10 +299,26 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 				canvas.drawRect(0, 0, screenW, 50 * percent, paint_black);
 				paint_white.setTextSize(30 * percent);
-				canvas.drawText("   电量:100%         距离:100m" + hostip, 0,
+				canvas.drawText("   电量:100%         距离:100m  摄像头ip:" + CLIENT_IP, 0,
 						40 * percent, paint_white);
-				canvas.drawText("设置", screenW - 100, 40 * percent, paint_white);
-
+				//canvas.drawText("设置", screenW - 100, 40 * percent, paint_white);
+				float offsetX =  smallCenterX-screenW/7;
+				float offsetY =  screenH*5/8-smallCenterY;
+				float offsetX2 = smallCenterX2-screenW*6/7;
+				float offsetY2 = screenH*5/8-smallCenterY2;
+				canvas.drawText("  OffsetX: " + offsetX + "  OffsetY: " + offsetY +
+						"  OffsetX2: " + offsetX2 +"  OffsetY2: " + offsetY2, 0, 40*percent , paint_white);
+				
+				String channel1 = "00000"+ Integer.toBinaryString((int)(offsetX2*2)+1500);
+				String channel2 = "00001"+ Integer.toBinaryString((int)(offsetY2*2)+1500);
+				String channel3 = "00010"+ Integer.toBinaryString((int)(offsetX*2)+1500);
+				String channel4 = "00011"+ Integer.toBinaryString((int)(offsetY*2)+1500);
+				canvas.drawText("  通道1: "+channel1, 0, 80*percent , paint_white);
+				canvas.drawText("  通道2: "+channel2, 0, 120*percent , paint_white);
+				canvas.drawText("  通道3: "+channel3, 0, 160*percent , paint_white);
+				canvas.drawText("  通道4: "+channel4, 0, 200*percent , paint_white);
+				Thread ctrl_thread = new UDPCommandSendThread(channel1+channel2+channel3+channel4, "192.168.169.13");
+				ctrl_thread.start();
 			}
 		} catch (Exception e) {
 
@@ -305,7 +327,18 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 				sfh.unlockCanvasAndPost(canvas);
 		}
 	}
-
+	public static int binaryToAlgorism(String binary) {		
+        int max = binary.length();
+        int result = 0;
+        for (int i = max; i > 0; i--) {
+            char c = binary.charAt(i - 1);
+            int algorism = c - '0';
+            result += Math.pow(2, max - i) * algorism;
+        }
+        
+        Log.d("udp", "result:"+result);
+        return result;
+    }
 	public void setSmallCircleXY(float centerX, float centerY, float R,
 			double rad) {
 		smallCenterX = (float) (R * Math.cos(rad)) + centerX;
@@ -635,7 +668,8 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 
 	public class DisplayThread extends Thread {
-		public DatagramSocket ds;
+		//public DatagramSocket ds;
+		public MulticastSocket  ds;
 		public int buffSize = 32768;
 		
 		private InputStream ins;
@@ -644,35 +678,113 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 		public void run() {
 			try {
-				ds = new DatagramSocket(portnum);
-
-				while (true) {
-					byte message[] = new byte[buffSize];
-					DatagramPacket datagramPacket = new DatagramPacket(message,
-							buffSize);
-					try {
-						this.ds.receive(datagramPacket);
-						Log.e("dispthread", "接受到数据");
-					} catch (IOException e) {
-						// TODO Auto-generated catch block
-						e.printStackTrace();
-					}
-	
-					this.ins = new ByteArrayInputStream(datagramPacket.getData());
-					Log.e("dispthread", "ins: " + ins);
-					
-					background=BitmapFactory.decodeStream(ins);
-					
-					if (background != null){
-						Log.e("dispthread", "background not null!");		
-					} else {
-						Log.e("dispthread", "background null!");
-					}
-				}
-			} catch (SocketException e1) {
+				ds = new MulticastSocket(portnum);
+				InetAddress serverAddress = InetAddress.getByName(BROADCAST_IP);
+				this.ds.joinGroup(serverAddress);
+			} catch (IOException e1) {
 				// TODO Auto-generated catch block
 				e1.printStackTrace();
 			}
+
+			while (true) {
+				byte message[] = new byte[buffSize];
+				DatagramPacket datagramPacket = new DatagramPacket(message,
+						buffSize);
+				try {
+					this.ds.receive(datagramPacket);
+					CLIENT_IP = datagramPacket.getAddress().getHostAddress();
+					Log.e("dispthread", "接受到数据");
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+
+				this.ins = new ByteArrayInputStream(datagramPacket.getData());
+				Log.e("dispthread", "ins: " + ins);
+				if (ins!=null)
+					background=BitmapFactory.decodeStream(ins);
+				
+				if (background != null){
+					Log.e("dispthread", "background not null!");		
+				} else {
+					Log.e("dispthread", "background null!");
+				}
+			}
+		}
+	}
+	
+	class UDPCommandSendThread extends Thread{
+		String command;
+		String ipname;
+    	public UDPCommandSendThread(String command, String ipname) {
+			// TODO Auto-generated constructor stub
+    		this.command = command;
+    		this.ipname = ipname;
+		}
+		@SuppressWarnings("null")
+		@Override
+		public void run() {
+			// TODO Auto-generated method stub
+			//super.run();
+			try {
+				//Log.d("udp","ipname: "+ipname);
+				//Log.d("udp","port: "+portnum);
+				//Log.d("udp","command: "+command);
+				
+				DatagramSocket socket = new DatagramSocket();
+				
+		           //创建一个InetAddree
+		        InetAddress serverAddress = InetAddress.getByName(ipname);
+		       
+				//String msgHead=java.net.URLEncoder.encode("PHONEVIDEO|"+username+"|","utf-8");
+				//byte[] buffer=msgHead.getBytes();
+				//DatagramPacket packetHead = new DatagramPacket(buffer,buffer.length,serverAddress,port);
+				//socket.send(packetHead);
+				//Log.d("bitmapinthread",myoutputstream.toString());
+		        //String msg=""; //这是要传输的数据
+		        byte [] data = {0,0,0,0,0,0,0,0};
+		        for (int i=0; i<command.length()/8; i++) {
+		        	Log.d("udp","d["+i+"]");
+		        	int temp = binaryToAlgorism(command.substring(i*8, i*8+8));
+		        	Log.d("udp","temp:"+temp);
+		        	data[i] = (byte) temp;
+		        	Log.d("udp","data[i]:"+data[i]);
+		        }
+		        
+		           //创建一个DatagramPacket对象，并指定要讲这个数据包发送到网络当中的哪个地址，以及端口号
+		        //byte [] data = msg.getBytes();
+		        
+		        Log.d("udp","data length:"+data.length);
+		        DatagramPacket packet = new DatagramPacket(data,data.length,serverAddress,portnum);
+//		        
+//		           //调用socket对象的send方法，发送数据
+		        socket.send(packet);
+		        Log.d("udp","after send");
+//		        int ncount=data.length/500;
+//		        for(int i=0;i<ncount;i++)
+//		        {
+//		        	DatagramPacket packet = new DatagramPacket(data,i*500,500,serverAddress,port);
+//		        	socket.send(packet);
+//		        	timeaft=System.currentTimeMillis();
+//		        	long deltasend=timeaft-timepre;
+//		        	String string=Long.toString(deltasend)+"#"+Integer.toString(500);
+//		        	 Log.v("deltaSend",string);
+//			           timepre=timeaft;
+//		        }
+//		        DatagramPacket packet = new DatagramPacket(data,ncount*500,data.length%500,serverAddress,port);
+//		        socket.send(packet);
+		           timeaft=System.currentTimeMillis();
+		           long deltasend=timeaft-timepre;
+		          
+		           //String string=Long.toString(deltasend)+"#"+Integer.toString(data.length%500);
+		          
+		           timepre=timeaft;
+		           socket.close();
+			} catch (Exception e) {
+				// TODO: handle exception	
+				e.printStackTrace();
+			}
+			
 		}
 	}
 
