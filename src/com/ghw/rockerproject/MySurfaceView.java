@@ -1,7 +1,6 @@
 package com.ghw.rockerproject;
 
 import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.DatagramPacket;
@@ -29,9 +28,15 @@ import android.view.SurfaceHolder.Callback;
 import android.view.SurfaceView;
 
 public class MySurfaceView extends SurfaceView implements Callback, Runnable {
-	private final String BROADCAST_IP = "224.0.0.1";
-	private String CLIENT_IP = "";
-	public int portnum = 9999;
+	public final String BROADCAST_IP = "224.0.0.1";
+	public final int SEND_PERIOD = 20; //ms
+	public String CLIENT_IP = "";
+	public MulticastSocket  ms;
+	public long timepre=0;
+	public long timeaft=0;
+	public final int MULTI_LISTEN_PORT = 9999;
+	public final int CTRL_DEST_PORT = 9998;
+	public final int CTRL_SRC_PORT = 9998;
 	private SurfaceHolder sfh;
 	private float smallCenterX, smallCenterY, smallCenterR = 60;
 	private float BigCenterX, BigCenterY, BigCenterR = 120;
@@ -40,6 +45,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	float percent = 1;
 	public static String hostip; // 本机IP
 	public Bitmap background;
+	public Bitmap old_background;
 	public double offsetX=0.0,offsetY=0.0,offsetX2=0.0,offsetY2=0.0;
 	private ServerSocket ss;
 	private InputStream ins;
@@ -61,8 +67,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 			dstbtn2_pressed, dstbtn3, dstbtn3_pressed, dstbtn4,
 			dstbtn4_pressed, dstenlarg, dstshrink, dstvideo, dstpicture;
 	private Paint paint, paint_black, paint_white, paint_line;
-	private long timepre=0;
-	private long timeaft=0;
+	
 	public MySurfaceView(Context context) {
 		super(context);
 		sfh = this.getHolder();
@@ -157,31 +162,34 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 				(float) (percent * 1.3 * 240 / width1));
 		dstBigCircleLeft = Bitmap.createBitmap(bigCircleLeft, 0, 0, width1,
 				height1, matrix1, true);
+
 		dstBigCircleRight = Bitmap.createBitmap(bigCircleRight, 0, 0, width1,
 				height1, matrix1, true);
+
 		int width2 = smallCircleLeft.getWidth();// 获取资源位图的宽
 		int height2 = smallCircleLeft.getHeight();// 获取资源位图的高
 		matrix2.postScale((float) (percent * 120 * 1.3 / width2),
 				(float) (percent * 1.3 * 120 / width2));
 		dstSmallCircleLeft = Bitmap.createBitmap(smallCircleLeft, 0, 0, width2,
 				height2, matrix2, true);
+
 		dstSmallCircleRight = Bitmap.createBitmap(smallCircleRight, 0, 0,
 				width2, height2, matrix2, true);
+	
 		int width3 = btn1.getWidth();
 		int height3 = btn1.getHeight();
 		matrix3.postScale((float) percent * 150 / height3, (float) percent
 				* 150 / height3);
-		dstbtn1 = Bitmap.createBitmap(btn1, 0, 0, width3, height3, matrix3,
-				true);
+		dstbtn1 = Bitmap.createBitmap(btn1, 0, 0, width3, height3, matrix3,	true);
 		// dstbtn2 = Bitmap.createBitmap(btn2,0,0,
 		// width3,height3,matrix3,true);
-		dstbtn3 = Bitmap.createBitmap(btn3, 0, 0, width3, height3, matrix3,
-				true);
+		dstbtn3 = Bitmap.createBitmap(btn3, 0, 0, width3, height3, matrix3, true);
 		// dstbtn4 = Bitmap.createBitmap(btn4,0,0,
 		// width3,height3,matrix3,true);
 
 		dstbtn1_pressed = Bitmap.createBitmap(btn1_pressed, 0, 0, width3,
 				height3, matrix3, true);
+
 		// dstbtn2_pressed = Bitmap.createBitmap(btn2_pressed,0,0,
 		// width3,height3,matrix3,true);
 		dstbtn3_pressed = Bitmap.createBitmap(btn3_pressed, 0, 0, width3,
@@ -203,11 +211,24 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 		matrix5.postScale((float) percent * 50 / width5, (float) percent * 50
 				/ width5);
 		dstup = Bitmap.createBitmap(up, 0, 0, width5, height5, matrix5, true);
+
 		dstdown = Bitmap.createBitmap(down, 0, 0, width5, height5, matrix5,
 				true);
 
+		try {
+			ms = new MulticastSocket(MULTI_LISTEN_PORT);
+			InetAddress serverAddress = InetAddress.getByName(BROADCAST_IP);
+			ms.joinGroup(serverAddress);
+		} catch (IOException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		}
+		
 		th = new Thread(this);
 		th.start();
+		
+		DisplayThread myDisThread = new DisplayThread();
+		myDisThread.start();
 	}
 
 	private String getLocalIPAddress() throws SocketException {
@@ -233,28 +254,35 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 				canvas.drawColor(Color.parseColor("#EEE8AA"));
 								
-				if (background == null)
-					;//Log.e("!!","background is null");
-				else {
-					//Log.e("!!","background is not null");
-					canvas.drawBitmap(background, 0, 0, null);
-					
+				if (background == null && old_background != null) {
+					Log.e("!!","background is null");
 					Matrix matrix = new Matrix();
-
-					int width = background.getWidth();// 获取资源位图的宽
-					int height = background.getHeight();// 获取资源位图的高
-					Log.e("!!",width + " " + height + " " + screenW + " " +screenH );
+					int width = old_background.getWidth();// 获取资源位图的宽
+					int height = old_background.getHeight();// 获取资源位图的高
+//					Log.e("!!",width + " " + height + " " + screenW + " " +screenH );
 					matrix.postScale((float) (screenW / width),
 							(float) (screenH / height));
+					
+					Bitmap dst_old_background= Bitmap.createBitmap(old_background, 0, 0, width,
+							height, matrix, true);
+					
+					canvas.drawBitmap(dst_old_background, 0, 0, null);
+				}
+				else if(background != null){
+					Log.e("!!","background is not null");
+					Matrix matrix = new Matrix();
+					int width = background.getWidth();// 获取资源位图的宽
+					int height = background.getHeight();// 获取资源位图的高
+//					Log.e("!!",width + " " + height + " " + screenW + " " +screenH );
+					matrix.postScale((float) (screenW / width),
+							(float) (screenH / height));
+					
 					Bitmap dst_background= Bitmap.createBitmap(background, 0, 0, width,
 							height, matrix, true);
 					
 					canvas.drawBitmap(dst_background, 0, 0, null);
 				}
 				
-				DisplayThread myDisThread = new DisplayThread();
-				myDisThread.start();
-			
 
 				/* 在调试信息中输出本机IP和MAC */
 				if (hostip == null) {
@@ -306,19 +334,33 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 				float offsetY =  screenH*5/8-smallCenterY;
 				float offsetX2 = smallCenterX2-screenW*6/7;
 				float offsetY2 = screenH*5/8-smallCenterY2;
-				canvas.drawText("  OffsetX: " + offsetX + "  OffsetY: " + offsetY +
-						"  OffsetX2: " + offsetX2 +"  OffsetY2: " + offsetY2, 0, 40*percent , paint_white);
+//				canvas.drawText("  OffsetX: " + offsetX + "  OffsetY: " + offsetY +
+//						"  OffsetX2: " + offsetX2 +"  OffsetY2: " + offsetY2, 0, 40*percent , paint_white);
 				
-				String channel1 = "00000"+ Integer.toBinaryString((int)(offsetX2*2)+1500);
-				String channel2 = "00001"+ Integer.toBinaryString((int)(offsetY2*2)+1500);
-				String channel3 = "00010"+ Integer.toBinaryString((int)(offsetX*2)+1500);
-				String channel4 = "00011"+ Integer.toBinaryString((int)(offsetY*2)+1500);
+				String channel1 = Integer.toBinaryString((int)((offsetX2/2)+128));
+				String channel2 = Integer.toBinaryString((int)((offsetY2/2)+128));
+				String channel3 = Integer.toBinaryString((int)((offsetX/2)+128));
+				String channel4 = Integer.toBinaryString((int)((offsetY/2)+128));
+				String channel5 = Integer.toBinaryString((int)128);
+				String channel6 = Integer.toBinaryString((int)0);
 				canvas.drawText("  通道1: "+channel1, 0, 80*percent , paint_white);
 				canvas.drawText("  通道2: "+channel2, 0, 120*percent , paint_white);
 				canvas.drawText("  通道3: "+channel3, 0, 160*percent , paint_white);
 				canvas.drawText("  通道4: "+channel4, 0, 200*percent , paint_white);
-				Thread ctrl_thread = new UDPCommandSendThread(channel1+channel2+channel3+channel4, "192.168.169.13");
-				ctrl_thread.start();
+				canvas.drawText("  通道5: "+channel5, 0, 240*percent , paint_white);
+				canvas.drawText("  通道6: "+channel6, 0, 280*percent , paint_white);
+				//CLIENT_IP = "192.168.1.108";
+				DatagramSocket socket = new DatagramSocket(CTRL_SRC_PORT);
+				if (CLIENT_IP!="") {
+					Thread ctrl_thread_chanel1 = new UDPCommandSendThread(socket, channel1+channel2+channel3+channel4+channel5+channel6, CLIENT_IP);
+					ctrl_thread_chanel1.start();
+//					Thread ctrl_thread_chanel2 = new UDPCommandSendThread(socket, channel1+channel2+channel3+channel4, CLIENT_IP);
+//					ctrl_thread_chanel2.start();
+//					Thread ctrl_thread_chanel3 = new UDPCommandSendThread(socket, channel3, CLIENT_IP);
+//					ctrl_thread_chanel3.start();
+//					Thread ctrl_thread_chanel4 = new UDPCommandSendThread(socket, channel4, CLIENT_IP);
+//					ctrl_thread_chanel4.start();
+				}
 			}
 		} catch (Exception e) {
 
@@ -336,7 +378,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
             result += Math.pow(2, max - i) * algorism;
         }
         
-        Log.d("udp", "result:"+result);
+        //Log.d("udp", "result:"+result);
         return result;
     }
 	public void setSmallCircleXY(float centerX, float centerY, float R,
@@ -667,59 +709,161 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	}
 
 
-	public class DisplayThread extends Thread {
-		//public DatagramSocket ds;
-		public MulticastSocket  ds;
-		public int buffSize = 32768;
-		
+//	public class DisplayThread extends Thread {
+//		//public DatagramSocket ds;
+//		
+//		public int buffSize = 32768;
+//		
+//		private InputStream ins;
+//		public Bitmap mybmp;
+//
+//		public void run() {
+//			while (true) {
+//				byte message[] = new byte[buffSize];
+//				DatagramPacket datagramPacket = new DatagramPacket(message,
+//						buffSize);
+//				try {
+//					ms.receive(datagramPacket);
+//					CLIENT_IP = datagramPacket.getAddress().getHostAddress();
+//					Log.d("dispthread", "接受到数据");
+//				} catch (IOException e) {
+//					// TODO Auto-generated catch block
+//					e.printStackTrace();
+//				}
+//
+//				this.ins = new ByteArrayInputStream(datagramPacket.getData());
+//				Log.d("dispthread", "ins: " + ins);
+//				if (ins!=null) {
+//					background=BitmapFactory.decodeStream(ins);
+//				}
+//			}
+//		
+//		}
+//	}
+	class DisplayThread extends Thread {
 		private InputStream ins;
-		public Bitmap mybmp;
-
-
+		private int count=0;
+		public  int buffSize = 32768;
+		public int packetSize = 32768;
+		public byte frameBuffer[] = new byte[buffSize];
+		public String flag = "";
+		@Override
 		public void run() {
-			try {
-				ds = new MulticastSocket(portnum);
-				InetAddress serverAddress = InetAddress.getByName(BROADCAST_IP);
-				this.ds.joinGroup(serverAddress);
-			} catch (IOException e1) {
-				// TODO Auto-generated catch block
-				e1.printStackTrace();
-			}
-
 			while (true) {
-				byte message[] = new byte[buffSize];
-				DatagramPacket datagramPacket = new DatagramPacket(message,
-						buffSize);
-				try {
-					this.ds.receive(datagramPacket);
-					CLIENT_IP = datagramPacket.getAddress().getHostAddress();
-					Log.e("dispthread", "接受到数据");
+				byte byteBuffer[] = new byte[packetSize];
+				byte message[] = new byte[packetSize];
+			    DatagramPacket datagramPacket = new DatagramPacket(message, packetSize);  
+			    try {
+					ms.receive(datagramPacket);
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				} 
+			    Log.d("conn", "连接成功!");
+			    this.ins = new ByteArrayInputStream(datagramPacket.getData());
+			    
+			    //Arrays.fill(byteBuffer,(byte)0);
+			    try {
+					ins.read(byteBuffer);
+					ins.close();
 				} catch (IOException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
+			    
+			    int recv_byte = packetSize;
+			    for (int i=packetSize-1; i>=0; i--) {                 //计算收到数据的字节数
+			        //System.out.println(byteBuffer[i]);
+			        if (byteBuffer[i] == 0){
+			            //System.out.println("recv_byte--");
+			            recv_byte--;
+			        }
+			        else
+			            break;
+			    }
+			   // System.out.println("接收到 " + recv_byte + " bytes 数据.");
 
-				this.ins = new ByteArrayInputStream(datagramPacket.getData());
-				Log.e("dispthread", "ins: " + ins);
-				if (ins!=null)
-					background=BitmapFactory.decodeStream(ins);
-				
-				if (background != null){
-					Log.e("dispthread", "background not null!");		
-				} else {
-					Log.e("dispthread", "background null!");
-				}
+			    /*
+			     *   处理视频流
+			     */
+			    for (int i=0; i<recv_byte; i++) {
+			        //System.out.println("in loop ["+i+"]: " + byteBuffer[i]);
+			        if (byteBuffer[i] == -1 && byteBuffer[i+1] == -40) {          //ffd8  begin
+			        	if (flag == "begin")
+			        		flag = "rebegin";
+			        	else
+			        		flag = "begin";
+			        	Log.d("disthread","meet ffd8");
+			            count = 0;
+			        } else if (byteBuffer[i] == -1 && byteBuffer[i+1] == -39) {   //ffd9  end
+			            flag = "end";
+			            Log.d("disthread","meet ffd9");
+			        }            
+			        if (flag == "begin") {
+			            frameBuffer[count] = byteBuffer[i];
+			            // System.out.println("["+count+"]"+frameBuffer[count] + "   byteBuffer["+i+"]: " + byteBuffer[i]);
+			       
+			            count++;
+			        } else if (flag == "end") {
+			            frameBuffer[count] = byteBuffer[i];
+//			            System.out.println("["+count+"]"+frameBuffer[count] + "   byteBuffer["+i+"]: " + byteBuffer[i]);
+			       
+			            frameBuffer[count+1] = byteBuffer[i+1];
+//			            System.out.println("["+(count+1)+"]"+frameBuffer[count+1] + "   byteBuffer["+(i+1)+"]: " + byteBuffer[i+1]);
+//			            Log.d("disthread","frameBuffer: "+frameBuffer);
+			           // bitmap = BitmapFactory.decodeByteArray(frameBuffer, 0, buffSize);
+			            InputStream picStream = new ByteArrayInputStream(frameBuffer);
+			            if (background != null)
+			            	old_background = background;
+						background=BitmapFactory.decodeStream(picStream);
+						if (background == null) Log.d("disthread","background is null");
+						Log.d("disthread","complete backgroud");
+						frameBuffer = new byte[buffSize];
+			            count = 0;
+			            flag = "";
+			        } else if (flag == "rebegin") {
+			        	InputStream picStream = new ByteArrayInputStream(frameBuffer);
+			            if (background != null){
+			            	old_background = background;
+			            }
+						background=BitmapFactory.decodeStream(picStream);
+						if (background == null) Log.d("disthread","rebegin:background is null");
+						else Log.d("disthread","rebegin:background is not null");
+						count = 0;
+						frameBuffer = new byte[buffSize];
+						frameBuffer[count] = byteBuffer[i];
+						count++;
+						flag = "begin";
+			        }
+			    }
+
+			    try {
+					this.ins.close();
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}					
+					
 			}
+			
 		}
+
 	}
+
+					
+					
+
 	
 	class UDPCommandSendThread extends Thread{
 		String command;
 		String ipname;
-    	public UDPCommandSendThread(String command, String ipname) {
+		DatagramSocket socket;
+		static final String destAddressStr = "224.0.0.1"; 
+    	public UDPCommandSendThread(DatagramSocket socket, String command, String ipname) {
 			// TODO Auto-generated constructor stub
     		this.command = command;
     		this.ipname = ipname;
+    		//this.socket = ms;
 		}
 		@SuppressWarnings("null")
 		@Override
@@ -727,59 +871,32 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 			// TODO Auto-generated method stub
 			//super.run();
 			try {
-				//Log.d("udp","ipname: "+ipname);
-				//Log.d("udp","port: "+portnum);
-				//Log.d("udp","command: "+command);
 				
-				DatagramSocket socket = new DatagramSocket();
+				/**
+				 *  使用广播发送udp控制信息，但是发送周期长达3s
+				InetAddress destAddress = InetAddress.getByName(destAddressStr);  
+                byte[] sendMSG = "11#msg".getBytes();  
+                DatagramPacket dp = new DatagramPacket(sendMSG, sendMSG.length, destAddress  , 9998);  
+                ms.send(dp);  
+                */
+				
 				
 		           //创建一个InetAddree
 		        InetAddress serverAddress = InetAddress.getByName(ipname);
-		       
-				//String msgHead=java.net.URLEncoder.encode("PHONEVIDEO|"+username+"|","utf-8");
-				//byte[] buffer=msgHead.getBytes();
-				//DatagramPacket packetHead = new DatagramPacket(buffer,buffer.length,serverAddress,port);
-				//socket.send(packetHead);
-				//Log.d("bitmapinthread",myoutputstream.toString());
-		        //String msg=""; //这是要传输的数据
-		        byte [] data = {0,0,0,0,0,0,0,0};
+		      
+		        byte [] data = new byte [command.length()/8];
 		        for (int i=0; i<command.length()/8; i++) {
-		        	Log.d("udp","d["+i+"]");
 		        	int temp = binaryToAlgorism(command.substring(i*8, i*8+8));
-		        	Log.d("udp","temp:"+temp);
 		        	data[i] = (byte) temp;
-		        	Log.d("udp","data[i]:"+data[i]);
 		        }
-		        
-		           //创建一个DatagramPacket对象，并指定要讲这个数据包发送到网络当中的哪个地址，以及端口号
-		        //byte [] data = msg.getBytes();
-		        
-		        Log.d("udp","data length:"+data.length);
-		        DatagramPacket packet = new DatagramPacket(data,data.length,serverAddress,portnum);
-//		        
-//		           //调用socket对象的send方法，发送数据
+		        DatagramPacket packet = new DatagramPacket(data,data.length,serverAddress,CTRL_DEST_PORT);
 		        socket.send(packet);
-		        Log.d("udp","after send");
-//		        int ncount=data.length/500;
-//		        for(int i=0;i<ncount;i++)
-//		        {
-//		        	DatagramPacket packet = new DatagramPacket(data,i*500,500,serverAddress,port);
-//		        	socket.send(packet);
-//		        	timeaft=System.currentTimeMillis();
-//		        	long deltasend=timeaft-timepre;
-//		        	String string=Long.toString(deltasend)+"#"+Integer.toString(500);
-//		        	 Log.v("deltaSend",string);
-//			           timepre=timeaft;
-//		        }
-//		        DatagramPacket packet = new DatagramPacket(data,ncount*500,data.length%500,serverAddress,port);
-//		        socket.send(packet);
-		           timeaft=System.currentTimeMillis();
-		           long deltasend=timeaft-timepre;
-		          
-		           //String string=Long.toString(deltasend)+"#"+Integer.toString(data.length%500);
-		          
-		           timepre=timeaft;
-		           socket.close();
+		       
+	           timeaft=System.currentTimeMillis();
+	           long deltasend=timeaft-timepre;
+	           timepre = timeaft;
+	           //Thread.sleep(SEND_PERIOD-deltasend);
+	           Log.d("udp", "deltatime: " + deltasend);
 			} catch (Exception e) {
 				// TODO: handle exception	
 				e.printStackTrace();
