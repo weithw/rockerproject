@@ -13,6 +13,7 @@ import java.net.ServerSocket;
 import java.net.SocketException;
 import java.util.Enumeration;
 
+import android.app.Service;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
@@ -21,6 +22,10 @@ import android.graphics.Color;
 import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.PixelFormat;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.util.Log;
 import android.view.MotionEvent;
 import android.view.SurfaceHolder;
@@ -28,9 +33,39 @@ import android.view.SurfaceHolder.Callback;
 import android.view.SurfaceView;
 
 public class MySurfaceView extends SurfaceView implements Callback, Runnable {
+	private SensorManager sm;
+	/*
+	 * <加速度传感器>
+	 */
+	
+	private Sensor sensor_acce;
+	private SensorEventListener mySensorListener_acce;
+	private double x = 0, y = 0, z = 0;
+	public static float TRAPDOOR = (float) 2.5;
+	public static float LOW = (float) 1.2;
+	boolean direct_flag[];
+	/*
+	 * <角度传感器>
+	 */
+	private SensorEventListener mySensorListener_gyro;
+	private Sensor sensor_gyro;
+	public float[] angle;  //陀螺仪获取角度
+	public float ANGLE_TRAPDOOR = 20;
+	public float ANGLE_LOW = 15;
+	
+	public int ACCE_MODE_SPEED = 2;
+	public int mode;    //模式  mode=0时为传统的双摇杆控制模式，mode=1时为手势控制模式
+	
+	public int ctrl_signal_status = 0;   //控制信号的网络状态
+	public int video_signal_status;    //视频传输信号的网络状态
+	
+	public float RectX;   //手势控制中按钮的y坐标
 	public final String BROADCAST_IP = "224.0.0.1";
 	public final int SEND_PERIOD = 20; //ms
-	public String CLIENT_IP = "";
+	public final String CLIENT_IP = "192.168.1.108";
+			
+	//public String CLIENT_IP = "127.0.0.1";
+	public String command = "";
 	public MulticastSocket  ms;
 	public long timepre=0;
 	public long timeaft=0;
@@ -38,10 +73,12 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	public final int CTRL_DEST_PORT = 9998;
 	public final int CTRL_SRC_PORT = 9998;
 	private SurfaceHolder sfh;
-	private float smallCenterX, smallCenterY, smallCenterR = 60;
-	private float BigCenterX, BigCenterY, BigCenterR = 120;
-	private float smallCenterX2, smallCenterY2, smallCenterR2 = 60;
-	private float BigCenterX2, BigCenterY2, BigCenterR2 = 120;
+	private float smallCenterX, smallCenterY, smallCenterR;
+	private float BigCenterX, BigCenterY;
+	private float BigCenterR;
+	private float smallCenterX2, smallCenterY2, smallCenterR2;
+	private float BigCenterX2, BigCenterY2;
+	private float BigCenterR2;
 	float percent = 1;
 	public static String hostip; // 本机IP
 	public Bitmap background;
@@ -49,7 +86,6 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	public double offsetX=0.0,offsetY=0.0,offsetX2=0.0,offsetY2=0.0;
 	private ServerSocket ss;
 	private InputStream ins;
-	private int angle;
 	private boolean btn1_choosed = false, btn2_choosed = false,
 			btn3_choosed = false, btn4_choosed = false;
 	private Thread th;
@@ -58,6 +94,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	private Canvas canvas;
 	public float screenW, screenH;
 	private float mapX = 0, mapY = 0;
+	
 	private Bitmap map, bigCircleLeft, bigCircleRight, smallCircleLeft,
 			smallCircleRight, dstBigCircleLeft, dstBigCircleRight,
 			dstSmallCircleLeft, dstSmallCircleRight;
@@ -66,14 +103,114 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	private Bitmap dstup, dstdown, dstbtn1, dstbtn1_pressed, dstbtn2,
 			dstbtn2_pressed, dstbtn3, dstbtn3_pressed, dstbtn4,
 			dstbtn4_pressed, dstenlarg, dstshrink, dstvideo, dstpicture;
-	private Paint paint, paint_black, paint_white, paint_line;
-	
+	private Paint paint, paint_black, paint_white, paint_line, paint_red;
+	public DatagramSocket send_ctrl_socket;
 	public MySurfaceView(Context context) {
 		super(context);
 		sfh = this.getHolder();
 		sfh.addCallback(this);
 		sfh.setFormat(PixelFormat.TRANSPARENT);
 		setZOrderOnTop(true);
+		
+		direct_flag = new boolean [6];
+		for (int i=0; i<6; i++)
+			direct_flag[i] = false;
+		//通过服务得到传感器管理对象 
+		sm = (SensorManager) MainActivity.ma.getSystemService(Service.SENSOR_SERVICE);
+		sensor_acce = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+		sensor_gyro = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+		mySensorListener_acce = new SensorEventListener() {
+			@Override
+			//传感器获取值发生改变时在响应此函数
+			public void onSensorChanged(SensorEvent event) {//备注1 
+				//传感器获取值发生改变，在此处理 
+				x = event.values[0]; //手机横向翻滚
+				//x>0 说明当前手机左翻 x<0右翻     
+				y = event.values[1]; //手机纵向翻滚
+				//y>0 说明当前手机下翻 y<0上翻
+				z = (float) (event.values[2] - 9.8); //屏幕的朝向
+				//z>0 手机屏幕朝上 z<0 手机屏幕朝下
+				
+				if (direct_flag[0] == false && (x>TRAPDOOR)) {
+					direct_flag[0] = true;
+					Log.d("flag", "0true");
+				} else if (direct_flag[0]==true && x<LOW&&x>-LOW) {
+					direct_flag[0] = false;
+					Log.d("flag", "0false");
+				}
+				
+				if (direct_flag[1] == false && (x<-TRAPDOOR)) {
+					direct_flag[1] = true;
+					Log.d("flag", "1true");
+				} else if (direct_flag[1]==true && x<LOW&&x>-LOW) {
+					direct_flag[1] = false;
+					Log.d("flag", "1false");
+				}
+				
+				if (direct_flag[2] == false && (y>TRAPDOOR)) {
+					direct_flag[2] = true;
+					Log.d("flag", "2true");
+				} else if (direct_flag[2]==true && y<LOW&&y>-LOW) {
+					direct_flag[2] = false;
+					Log.d("flag", "2false");
+				}
+				
+				if (direct_flag[3] == false && (y<-TRAPDOOR)) {
+					direct_flag[3] = true;
+					Log.d("flag", "3true");
+				} else if (direct_flag[3]==true && y<LOW&&y>-LOW) {
+					direct_flag[3] = false;
+					Log.d("flag", "3false");
+				}
+				
+				if (direct_flag[4] == false && (angle[2]>ANGLE_TRAPDOOR)) {
+					direct_flag[4] = true;
+					Log.d("flag", "4true");
+				} else if (direct_flag[4]==true && angle[2]<ANGLE_LOW&&angle[2]>-ANGLE_LOW) {
+					direct_flag[4] = false;
+					Log.d("flag", "4false");
+				}
+				if (direct_flag[5] == false && (angle[2]<-ANGLE_TRAPDOOR)) {
+					direct_flag[5] = true;
+					Log.d("flag", "5true");
+				} else if (direct_flag[5]==true && angle[2]<ANGLE_LOW&&angle[2]>-ANGLE_LOW) {
+					direct_flag[5] = false;
+					Log.d("flag", "5false");
+				}	
+					
+				
+			}
+
+			@Override
+			//传感器的精度发生改变时响应此函数
+			public void onAccuracyChanged(Sensor sensor, int accuracy) {
+				// TODO Auto-generated method stub
+
+			}
+		};
+		mySensorListener_gyro = new SensorEventListener() {
+			@Override
+			
+			public void onSensorChanged(SensorEvent event)
+			{
+			   //if (timestamp != 0) {
+			    //   final float dT = (event.timestamp - timestamp) * NS2S;
+			       angle[0] += event.values[0];// * dT;
+			       angle[1] += event.values[1];// * dT;
+			       angle[2] += event.values[2];// * dT;
+			       Log.d("angle", "0: "+angle[0] + " 1: " +angle[1] + " 2: " + angle[2]);
+			   //}
+			   //timestamp = event.timestamp;
+			}
+
+			@Override
+			public void onAccuracyChanged(Sensor sensor, int accuracy) {
+				// TODO Auto-generated method stub
+
+			}
+		};
+		
+		
 		paint = new Paint();
 		paint.setColor(Color.parseColor("#20B2AA"));
 		paint.setAntiAlias(true);
@@ -84,6 +221,9 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 		paint_white.setColor(Color.WHITE);
 		paint_white.setAntiAlias(true);
 		paint_white.setTextSize(30);
+		paint_red = new Paint();
+		paint_red.setColor(Color.RED);
+		paint_red.setAntiAlias(true);
 		paint_line = new Paint();
 		paint_line.setColor(Color.parseColor("#d14242"));
 		paint_line.setAntiAlias(true);
@@ -133,13 +273,26 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 	@Override
 	public void surfaceCreated(SurfaceHolder holder) {
+		try {
+			send_ctrl_socket = new DatagramSocket(CTRL_SRC_PORT);
+		} catch (SocketException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		angle = new float [3];
+		for (int i=0; i<3; i++) {
+			angle[i] = 0;
+		}
 		screenW = this.getWidth();
 		screenH = this.getHeight();
 		percent = (float) (screenH / 720);
-		System.out.println("screenH:" + screenH + "   screenW:" + screenW);
+		RectX = screenW*7/8 - percent * 120;    //初始化按钮
+		//System.out.println("screenH:" + screenH + "   screenW:" + screenW);
 		// map = Bitmap.createScaledBitmap(map, (int)screenW, (int)screenH,
 		// true);
-		smallCenterY = screenH * 5 / 8;
+		smallCenterR = smallCenterR2 = (float) (60 * 1.3 * percent);
+		BigCenterR = BigCenterR2 = (float) (120 * 1.3 * percent);
+		smallCenterY = screenH * 5 / 8 + BigCenterR;
 		smallCenterX = screenW / 7;
 		BigCenterY = screenH * 5 / 8;
 		BigCenterX = screenW / 7;
@@ -147,9 +300,8 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 		smallCenterX2 = screenW * 6 / 7;
 		BigCenterY2 = screenH * 5 / 8;
 		BigCenterX2 = screenW * 6 / 7;
-		smallCenterR = smallCenterR2 = (float) (60 * 1.3 * percent);
-		BigCenterR = BigCenterR2 = (float) (120 * 1.3 * percent);
-
+		
+		
 		flag = true;
 		Matrix matrix1 = new Matrix();
 		Matrix matrix2 = new Matrix();
@@ -229,6 +381,9 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 		
 		DisplayThread myDisThread = new DisplayThread();
 		myDisThread.start();
+
+		
+		
 	}
 
 	private String getLocalIPAddress() throws SocketException {
@@ -304,14 +459,16 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 						- smallCenterR, smallCenterY - smallCenterR, null);
 				canvas.drawBitmap(dstSmallCircleRight, smallCenterX2
 						- smallCenterR2, smallCenterY2 - smallCenterR2, null);
-				paint.setAlpha(0x77);
+				
 
-				if (btn1_choosed == true)
+				if (btn1_choosed == true) {
 					canvas.drawBitmap(dstbtn1_pressed, screenW / 8 - percent
 							* 120, 60 * percent, null);
-				else
+				}
+				else {
 					canvas.drawBitmap(dstbtn1, screenW / 8 - percent * 120,
 							60 * percent, null);
+				}
 
 				if (btn3_choosed == true)
 					canvas.drawBitmap(dstbtn3_pressed, screenW * 7 / 8
@@ -327,40 +484,114 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 				canvas.drawRect(0, 0, screenW, 50 * percent, paint_black);
 				paint_white.setTextSize(30 * percent);
-				canvas.drawText("   电量:100%         距离:100m  摄像头ip:" + CLIENT_IP, 0,
-						40 * percent, paint_white);
+//				canvas.drawText("   电量:100%         距离:100m  摄像头ip:" + CLIENT_IP, 0,
+//						40 * percent, paint_white);
 				//canvas.drawText("设置", screenW - 100, 40 * percent, paint_white);
-				float offsetX =  smallCenterX-screenW/7;
-				float offsetY =  screenH*5/8-smallCenterY;
-				float offsetX2 = smallCenterX2-screenW*6/7;
-				float offsetY2 = screenH*5/8-smallCenterY2;
-//				canvas.drawText("  OffsetX: " + offsetX + "  OffsetY: " + offsetY +
-//						"  OffsetX2: " + offsetX2 +"  OffsetY2: " + offsetY2, 0, 40*percent , paint_white);
+				float offsetX =  (float) ((smallCenterX-screenW/7)*1.5*256/percent/234);
+				float offsetY =  (float) ((screenH*5/8-smallCenterY)*1.5*256/percent/234);
+				float offsetX2 = (float) ((smallCenterX2-screenW*6/7)*1.5*256/percent/234);
+				float offsetY2 = (float) ((screenH*5/8-smallCenterY2)*1.5*256/percent/234);
+				canvas.drawText("Rockerproject_v2.2 "+hostip+" OffsetX: " + offsetX + "  OffsetY: " + offsetY +
+						"  OffsetX2: " + offsetX2 +"  OffsetY2: " + offsetY2, 0, 40*percent , paint_white);
+				Log.d("percent","offset:" + percent);
+				byte[] channel = new byte[6];
+				channel[0] = (byte)((offsetX2/2)+128);
+				channel[1] = (byte)((offsetY2/2)+128);
+				channel[2] = (byte)((offsetY/2)+128);
+				channel[3] = (byte)((offsetX/2)+128);
+				channel[4] = (byte)128;
+				channel[5] = (byte)1;
+								
+				Thread ctrl_thread_chanel1 = new UDPCommandSendThread(send_ctrl_socket,channel);
+				ctrl_thread_chanel1.start();
+	            timeaft=System.currentTimeMillis();
+	            long deltasend=timeaft-timepre;
+	            timepre = timeaft;
+	            canvas.drawText("周期: "+(float)deltasend/1000 + "s", 0, 600 , paint_white);
+	            
+				canvas.drawText("  通道1: "+channel[0], 0, 80*percent , paint_white);
+				canvas.drawText("  通道2: "+channel[1], 0, 120*percent , paint_white);
+				canvas.drawText("  通道3: "+channel[2], 0, 160*percent , paint_white);
+				canvas.drawText("  通道4: "+channel[3], 0, 200*percent , paint_white);
+				canvas.drawText("  通道5: "+channel[4], 0, 240*percent , paint_white);
+				canvas.drawText("  通道6: "+channel[5], 0, 280*percent , paint_white);
+				canvas.drawText("angle: "+
+						new java.text.DecimalFormat("0.00").format(angle[0])+"  " + 
+						new java.text.DecimalFormat("0.00").format(angle[1])+ "  " + 
+						new java.text.DecimalFormat("0.00").format(angle[2]), 0, 500, paint_white);
+				if (mode == 1) {
+					paint_black.setAlpha(0x77);
+					canvas.drawRect(0, 0, screenW , screenH, paint_black);
+					canvas.drawRect(screenW * 1 / 8 + percent * 120, screenH * 7 / 8 - percent * 120, screenW * 7 / 8 - percent * 120, screenH * 1 / 8 + percent * 120, paint);
+					//canvas.drawText("[debug]  RectX: " + RectX + "  hightest: " + (screenW * 7 / 8), 0, 500, paint_red);
+					//绘制mode1中的油门（血条状）
+					for (float i = RectX; i<screenW * 7 / 8- percent * 130; i+= percent *20)
+						canvas.drawRect(i, screenH * 7 / 8 - percent * 125, i+percent * 15, screenH * 1 / 8 + percent * 125, paint_red);
+					float tempX = smallCenterX;
+					float tempX2 = smallCenterX2;
+					float tempY = smallCenterY;
+					float tempY2 = smallCenterY2;
+					
+					if (direct_flag[0] == true) {
+						canvas.drawText("flag[0]==true", 0, 290, paint_white);
+						tempX2-=ACCE_MODE_SPEED;
+					} else if (direct_flag[1] == true) {
+						canvas.drawText("flag[1]==true", 0, 320, paint_white);
+						tempX2+=ACCE_MODE_SPEED;
+					} else
+						tempX2 = BigCenterX2;
+					if (direct_flag[2] == true) {
+						canvas.drawText("flag[2]==true", 0, 350, paint_white);
+						tempY2+=ACCE_MODE_SPEED;
+					} else if (direct_flag[3] == true){
+						canvas.drawText("flag[3]==true", 0, 380, paint_white);
+						tempY2-=ACCE_MODE_SPEED;
+					} else
+						tempY2 = BigCenterY2;
+					if (direct_flag[4] == true) {
+						canvas.drawText("flag[4]==true", 0, 350, paint_white);
+						tempX-=ACCE_MODE_SPEED;
+					} else if (direct_flag[5] == true){
+						canvas.drawText("flag[5]==true", 0, 380, paint_white);
+						tempX+=ACCE_MODE_SPEED;
+					} else
+						tempX = BigCenterX;
+
 				
-				String channel1 = Integer.toBinaryString((int)((offsetX2/2)+128));
-				String channel2 = Integer.toBinaryString((int)((offsetY2/2)+128));
-				String channel3 = Integer.toBinaryString((int)((offsetX/2)+128));
-				String channel4 = Integer.toBinaryString((int)((offsetY/2)+128));
-				String channel5 = Integer.toBinaryString((int)128);
-				String channel6 = Integer.toBinaryString((int)0);
-				canvas.drawText("  通道1: "+channel1, 0, 80*percent , paint_white);
-				canvas.drawText("  通道2: "+channel2, 0, 120*percent , paint_white);
-				canvas.drawText("  通道3: "+channel3, 0, 160*percent , paint_white);
-				canvas.drawText("  通道4: "+channel4, 0, 200*percent , paint_white);
-				canvas.drawText("  通道5: "+channel5, 0, 240*percent , paint_white);
-				canvas.drawText("  通道6: "+channel6, 0, 280*percent , paint_white);
-				//CLIENT_IP = "192.168.1.108";
-				DatagramSocket socket = new DatagramSocket(CTRL_SRC_PORT);
-				if (CLIENT_IP!="") {
-					Thread ctrl_thread_chanel1 = new UDPCommandSendThread(socket, channel1+channel2+channel3+channel4+channel5+channel6, CLIENT_IP);
-					ctrl_thread_chanel1.start();
-//					Thread ctrl_thread_chanel2 = new UDPCommandSendThread(socket, channel1+channel2+channel3+channel4, CLIENT_IP);
-//					ctrl_thread_chanel2.start();
-//					Thread ctrl_thread_chanel3 = new UDPCommandSendThread(socket, channel3, CLIENT_IP);
-//					ctrl_thread_chanel3.start();
-//					Thread ctrl_thread_chanel4 = new UDPCommandSendThread(socket, channel4, CLIENT_IP);
-//					ctrl_thread_chanel4.start();
+					if (Math.sqrt(Math.pow((BigCenterX - (int) tempX), 2)
+							+ Math.pow((BigCenterY - (int) tempY), 2)) <= BigCenterR) {
+						// System.out.println("In left circle!");
+						smallCenterX = tempX;
+						smallCenterY = tempY;
+					} else if (Math.sqrt(Math.pow((BigCenterX - (int) tempX), 2)
+							+ Math.pow((BigCenterY - (int) tempY), 2)) <= BigCenterR + 60
+							* percent) {
+						// System.out.println("On left circle!");
+						setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
+								getRad(BigCenterX, BigCenterY, tempX, tempY));
+					} 
+					
+					if (Math.sqrt(Math.pow((BigCenterX2 - (int) tempX2), 2)
+							+ Math.pow((BigCenterY2 - (int) tempY2), 2)) <= BigCenterR2) {
+						smallCenterX2 = tempX2;
+						smallCenterY2 = tempY2;
+					} else if (Math.sqrt(Math.pow((BigCenterX2 - (int) tempX2), 2)
+							+ Math.pow((BigCenterY2 - (int) tempY2), 2)) <= BigCenterR2 + 60
+							* percent) {
+						setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
+								getRad(BigCenterX2, BigCenterY2, tempX2, tempY2));
+					}
+						
+				
+					Log.d("xy", "tempx2: "+tempX2 + " tempy2:" + tempY2+"\nx2: "+smallCenterX2+"y2: " +smallCenterY2);
+					paint_black.setAlpha(0xFF);
+					
 				}
+				
+				if (ctrl_signal_status == 0 )
+					canvas.drawCircle(screenW - 25*percent, 27*percent, 10*percent, paint_red);
+				else 
+					canvas.drawCircle(screenW - 25*percent, 27*percent, 10*percent, paint_white);
 			}
 		} catch (Exception e) {
 
@@ -410,64 +641,68 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	}
 
 	public int judgeTouchArea(float x, float y) {
-		if ((y > 60 * percent) && (y < 210 * percent)) {
-			if ((x > screenW / 8 - percent * 120)
-					&& (x < screenW / 8 + percent * 120)) {
-				// System.out.println("Btn1 pressed!");
-				return 1;
-			} else if ((x > screenW * 7 / 8 - percent * 120)
-					&& (x < screenW * 7 / 8 + percent * 120)) {
-				// System.out.println("Btn3 pressed!");
-				return 3;
+		if (mode == 0) {
+			if ((y > 60 * percent) && (y < 210 * percent)) {
+				if ((x > screenW / 8 - percent * 120)
+						&& (x < screenW / 8 + percent * 120)) {
+					// System.out.println("Btn1 pressed!");
+					return 1;
+				} else if ((x > screenW * 7 / 8 - percent * 120)
+						&& (x < screenW * 7 / 8 + percent * 120)) {
+					// System.out.println("Btn3 pressed!");
+					return 3;
+				}
+			} 
+	
+			if ((x > screenW / 2 - percent * 50)
+					&& (x < screenW / 2 + percent * 50)) {
+				if ((y > 0) && (y < 180 * percent)) {
+					// System.out.println("Btn up pressed!");
+					return 5;
+				} else if ((y > 590 * percent) && (y < screenH)) {
+					// System.out.println("Btn down pressed!");
+					return 6;
+				}
+	
+			}/*
+			 * else if ((y>screenH/2-percent*50)&&(y<screenH/2+percent*50)) { if
+			 * ((x>screenW/8+percent*180)&&(x<screenW/8+percent*250)) {
+			 * //System.out.println("Btn enlarg pressed!"); return 7; } else if
+			 * ((x>screenW*7/8-percent*240)&&(x<screenW*7/8-percent*180)) {
+			 * //System.out.println("Btn shrink pressed!"); return 8; }
+			 * 
+			 * }
+			 */
+	
+			if (Math.sqrt(Math.pow((BigCenterX - (int) x), 2)
+					+ Math.pow((BigCenterY - (int) y), 2)) <= BigCenterR) {
+				// System.out.println("In left circle!");
+				return 9;
+			} else if (Math.sqrt(Math.pow((BigCenterX - (int) x), 2)
+					+ Math.pow((BigCenterY - (int) y), 2)) <= BigCenterR + 60
+					* percent) {
+				// System.out.println("On left circle!");
+				return 10;
+			} else if (Math.sqrt(Math.pow((BigCenterX2 - (int) x), 2)
+					+ Math.pow((BigCenterY2 - (int) y), 2)) <= BigCenterR2) {
+				// System.out.println("In right circle!");
+				return 11;
+			} else if (Math.sqrt(Math.pow((BigCenterX2 - (int) x), 2)
+					+ Math.pow((BigCenterY2 - (int) y), 2)) <= BigCenterR2 + 60
+					* percent) {
+				// System.out.println("On right circle!");
+				return 12;
 			}
-		} /*
-		 * else if((y>510*percent)&&(y<660*percent)) { if
-		 * ((x>screenW/8-percent*120)&&(x<screenW/8+percent*120)){
-		 * //System.out.println("Btn2 pressed!"); return 2; } else if
-		 * ((x>screenW*7/8-percent*120)&&(x<screenW*7/8+percent*120)) {
-		 * //System.out.println("Btn4 pressed!"); return 4; } }
-		 */
-
-		if ((x > screenW / 2 - percent * 50)
-				&& (x < screenW / 2 + percent * 50)) {
-			if ((y > 0) && (y < 180 * percent)) {
-				// System.out.println("Btn up pressed!");
-				return 5;
-			} else if ((y > 590 * percent) && (y < screenH)) {
-				// System.out.println("Btn down pressed!");
-				return 6;
-			}
-
-		}/*
-		 * else if ((y>screenH/2-percent*50)&&(y<screenH/2+percent*50)) { if
-		 * ((x>screenW/8+percent*180)&&(x<screenW/8+percent*250)) {
-		 * //System.out.println("Btn enlarg pressed!"); return 7; } else if
-		 * ((x>screenW*7/8-percent*240)&&(x<screenW*7/8-percent*180)) {
-		 * //System.out.println("Btn shrink pressed!"); return 8; }
-		 * 
-		 * }
-		 */
-
-		if (Math.sqrt(Math.pow((BigCenterX - (int) x), 2)
-				+ Math.pow((BigCenterY - (int) y), 2)) <= BigCenterR) {
-			// System.out.println("In left circle!");
-			return 9;
-		} else if (Math.sqrt(Math.pow((BigCenterX - (int) x), 2)
-				+ Math.pow((BigCenterY - (int) y), 2)) <= BigCenterR + 60
-				* percent) {
-			// System.out.println("On left circle!");
-			return 10;
-		} else if (Math.sqrt(Math.pow((BigCenterX2 - (int) x), 2)
-				+ Math.pow((BigCenterY2 - (int) y), 2)) <= BigCenterR2) {
-			// System.out.println("In right circle!");
-			return 11;
-		} else if (Math.sqrt(Math.pow((BigCenterX2 - (int) x), 2)
-				+ Math.pow((BigCenterY2 - (int) y), 2)) <= BigCenterR2 + 60
-				* percent) {
-			// System.out.println("On right circle!");
-			return 12;
+		} else if (mode == 1) {
+			 if (
+					 (x < screenW * 7 / 8 - percent * 120) && (x > screenW * 1 / 8 + percent * 120)
+					 && (y < screenH * 7 / 8 - percent * 120) && (y > screenH * 1 / 8 + percent * 120)
+			    ) {
+					// System.out.println("Btn3 pressed!");
+					return 13;
+				} 
+			return 14;
 		}
-
 		return 0;
 	}
 
@@ -475,7 +710,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 	public boolean onTouchEvent(MotionEvent event) {
 		float x0 = event.getX(0);
 		float y0 = event.getY(0);
-		System.out.println("x=" + x0 / percent + " y=" + y0 / percent);
+//		System.out.println("x=" + x0 / percent + " y=" + y0 / percent);
 
 		int pointerCount = event.getPointerCount();
 		int action = event.getAction();
@@ -483,10 +718,12 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 			int choose = judgeTouchArea(x0, y0);
 			switch (action) {
 			case MotionEvent.ACTION_UP:
-				smallCenterX = BigCenterX;
-				// smallCenterY = BigCenterY;
-				smallCenterX2 = BigCenterX2;
-				smallCenterY2 = BigCenterY2;
+				if (mode == 0){
+					smallCenterX = BigCenterX;
+					// smallCenterY = BigCenterY;
+					smallCenterX2 = BigCenterX2;
+					smallCenterY2 = BigCenterY2;
+				}
 				// System.out.println("ACTION_DOWN pointerCount=" +
 				// pointerCount);
 				break;
@@ -506,9 +743,14 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 						btn2_choosed = false;
 					break;
 				case 3:
-					if (btn3_choosed == false)
+					if (btn3_choosed == false) {
+						mode = 1;   //切换为手势控制模式
+						sm.registerListener(mySensorListener_acce, sensor_acce, SensorManager.SENSOR_DELAY_GAME);
+						sm.registerListener(mySensorListener_gyro, sensor_gyro, SensorManager.SENSOR_DELAY_GAME);
 						btn3_choosed = true;
+					}
 					else
+						
 						btn3_choosed = false;
 					break;
 				case 4:
@@ -529,31 +771,61 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 				case 8:
 
 					break;
+				case 13:
+					if (mode == 1) {
+						RectX  = x0;
+						smallCenterY = BigCenterY+BigCenterR+BigCenterR * 2 *(RectX-screenW * 7 / 8 + percent * 120)/(screenW * 3 / 4 - percent * 240);
+					}
+					break;
+				case 14:
+					mode = 0;  //切换为传统双摇杆模式
+					sm.unregisterListener(mySensorListener_acce);
+					sm.unregisterListener(mySensorListener_gyro);
+					for (int i=0; i<3; i++)
+						angle[i] = 0;
+					btn3_choosed = false;
+					break; 
 				}
 				break;
 			case MotionEvent.ACTION_MOVE:
 				// System.out.println("ACTION_MOVE pointerCount=" +
 				// pointerCount);
-				System.out.println("choose:" + choose);
+				//System.out.println("choose:" + choose);
 				switch (choose) {
 
 				case 9:// in left circle
-					smallCenterX = x0;
-					smallCenterY = y0;
+					if (mode == 0) {
+						smallCenterX = x0;
+						smallCenterY = y0;
+					}
 					break;
 				case 10:
-					setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
-							getRad(BigCenterX, BigCenterY, x0, y0));
+					if (mode == 0) {
+						setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
+								getRad(BigCenterX, BigCenterY, x0, y0));
+					}
 					break;
 				case 11:
-					smallCenterX2 = x0;
-					smallCenterY2 = y0;
+					if (mode == 0) { 
+						smallCenterX2 = x0;
+						smallCenterY2 = y0;
+					}
 					break;
 				case 12:
-					setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
-							getRad(BigCenterX2, BigCenterY2, x0, y0));
+					if (mode == 0) {
+						setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
+								getRad(BigCenterX2, BigCenterY2, x0, y0));
+					}
+					break;
+				case 13:
+					if (mode == 1) {
+						RectX  = x0;
+					//	把mode1的油门量按比例转化为mode0的油门量
+						smallCenterY = BigCenterY+BigCenterR+BigCenterR * 2 *(RectX-screenW * 7 / 8 + percent * 120)/(screenW * 3 / 4 - percent * 240);
+					}
 					break;
 				}
+				
 				break;
 			}
 
@@ -564,9 +836,9 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 			float y1 = event.getY(1);
 			int choose1 = judgeTouchArea(x0, y0);
 			int choose2 = judgeTouchArea(x1, y1);
-			System.out.println("choose1:" + choose1 + " choose2:" + choose2);
-			System.out.println("x0:" + x0 + " y0:" + y0 + " x1:" + x1 + " y1:"
-					+ y1);
+			//System.out.println("choose1:" + choose1 + " choose2:" + choose2);
+			//System.out.println("x0:" + x0 + " y0:" + y0 + " x1:" + x1 + " y1:"
+				//	+ y1);
 			switch (action) {
 			case MotionEvent.ACTION_MOVE:
 				// System.out.println("ACTION_MOVE pointerCount=" +
@@ -574,39 +846,55 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 				switch (choose1) {
 
 				case 9:// in left circle
-					smallCenterX = x0;
-					smallCenterY = y0;
+					if (mode == 0) {
+						smallCenterX = x0;
+						smallCenterY = y0;
+					}
 					break;
 				case 10:
-					setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
-							getRad(BigCenterX, BigCenterY, x0, y0));
+					if (mode == 0) {
+						setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
+								getRad(BigCenterX, BigCenterY, x0, y0));
+					}
 					break;
 				case 11:
-					smallCenterX2 = x0;
-					smallCenterY2 = y0;
+					if (mode == 0) {
+						smallCenterX2 = x0;
+						smallCenterY2 = y0;
+					}
 					break;
 				case 12:
-					setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
-							getRad(BigCenterX2, BigCenterY2, x0, y0));
+					if (mode == 0) {
+						setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
+								getRad(BigCenterX2, BigCenterY2, x0, y0));
+					}
 					break;
 				}
 				switch (choose2) {
 
 				case 9:// in left circle
-					smallCenterX = x1;
-					smallCenterY = y1;
+					if (mode == 0) {
+						smallCenterX = x1;
+						smallCenterY = y1;
+					}
 					break;
 				case 10:
-					setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
-							getRad(BigCenterX, BigCenterY, x1, y1));
+					if (mode == 0) {
+						setSmallCircleXY(BigCenterX, BigCenterY, BigCenterR,
+								getRad(BigCenterX, BigCenterY, x1, y1));
+					}
 					break;
 				case 11:
-					smallCenterX2 = x1;
-					smallCenterY2 = y1;
+					if (mode == 0) {
+						smallCenterX2 = x1;
+						smallCenterY2 = y1;
+					}
 					break;
 				case 12:
-					setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
+					if (mode == 0) {
+						setSmallCircleXY2(BigCenterX2, BigCenterY2, BigCenterR2,
 							getRad(BigCenterX2, BigCenterY2, x1, y1));
+					}
 					break;
 				}
 				break;
@@ -810,7 +1098,7 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 			       
 			            frameBuffer[count+1] = byteBuffer[i+1];
 //			            System.out.println("["+(count+1)+"]"+frameBuffer[count+1] + "   byteBuffer["+(i+1)+"]: " + byteBuffer[i+1]);
-//			            Log.d("disthread","frameBuffer: "+frameBuffer);
+			            Log.d("disthread","frameBuffer: "+frameBuffer);
 			           // bitmap = BitmapFactory.decodeByteArray(frameBuffer, 0, buffSize);
 			            InputStream picStream = new ByteArrayInputStream(frameBuffer);
 			            if (background != null)
@@ -855,14 +1143,12 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 
 	
 	class UDPCommandSendThread extends Thread{
-		String command;
-		String ipname;
 		DatagramSocket socket;
-		static final String destAddressStr = "224.0.0.1"; 
-    	public UDPCommandSendThread(DatagramSocket socket, String command, String ipname) {
+		byte[] data;
+    	public UDPCommandSendThread(DatagramSocket socket, byte[]data) {
 			// TODO Auto-generated constructor stub
-    		this.command = command;
-    		this.ipname = ipname;
+    		this.socket = socket;
+    		this.data = data; 
     		//this.socket = ms;
 		}
 		@SuppressWarnings("null")
@@ -882,21 +1168,20 @@ public class MySurfaceView extends SurfaceView implements Callback, Runnable {
 				
 				
 		           //创建一个InetAddree
-		        InetAddress serverAddress = InetAddress.getByName(ipname);
-		      
-		        byte [] data = new byte [command.length()/8];
-		        for (int i=0; i<command.length()/8; i++) {
-		        	int temp = binaryToAlgorism(command.substring(i*8, i*8+8));
-		        	data[i] = (byte) temp;
-		        }
+				Log.d("CLIENT_IP",CLIENT_IP);
+		        InetAddress serverAddress = InetAddress.getByName(CLIENT_IP);
+		   
+
+//		        Log.d("udp", "data: " + data.length);
+//		        Log.d("udp", "ipname: " + ipname);
+//		        Log.d("udp", "dest_port: " + CTRL_DEST_PORT);
 		        DatagramPacket packet = new DatagramPacket(data,data.length,serverAddress,CTRL_DEST_PORT);
+		        String command = new String(data);
+		        Log.d("command", command + " : " + data.length);
+
 		        socket.send(packet);
-		       
-	           timeaft=System.currentTimeMillis();
-	           long deltasend=timeaft-timepre;
-	           timepre = timeaft;
-	           //Thread.sleep(SEND_PERIOD-deltasend);
-	           Log.d("udp", "deltatime: " + deltasend);
+
+		        
 			} catch (Exception e) {
 				// TODO: handle exception	
 				e.printStackTrace();
